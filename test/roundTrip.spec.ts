@@ -1,103 +1,5 @@
 import {DynamoDB} from '@aws-sdk/client-dynamodb';
-
-interface Event<T = unknown> {
-  type: string;
-  data: T;
-}
-
-interface EventStream<T extends Event = Event> {
-  name: string;
-  version: number;
-  events: () => AsyncGenerator<T>;
-}
-
-class EventStore {
-  #client: DynamoDB;
-  #table: string;
-
-  public constructor(table: string, client: DynamoDB) {
-    this.#client = client;
-    this.#table = table;
-  }
-
-  public async write(stream: string, event: Event) {
-    await this.#client.transactWriteItems({
-      TransactItems: [
-        {
-          Update: {
-            TableName: this.#table,
-            Key: {
-              PK: {S: stream},
-              SK: {S: '_METADATA'},
-            },
-
-            UpdateExpression: 'ADD #version :increment',
-            ExpressionAttributeNames: {'#version': 'VERSION'},
-            ExpressionAttributeValues: {':increment': {N: '1'}},
-          },
-        },
-        {
-          Put: {
-            TableName: this.#table,
-            Item: {
-              PK: {S: stream},
-              SK: {S: 'event'},
-              TYPE: {S: event.type},
-              DATA: {S: JSON.stringify(event.data)},
-            },
-          },
-        },
-      ],
-    });
-  }
-
-  public async read(stream: string) {
-    const result = await this.#client.query({
-      TableName: this.#table,
-      ExpressionAttributeValues: {
-        ':stream': {S: stream},
-      },
-      KeyConditionExpression: 'PK = :stream',
-    });
-
-    let version = 0;
-    const events: Array<Event> = [];
-
-    for (const item of result.Items || []) {
-      if ('VERSION' in item) {
-        version = parseInt(item['VERSION'].N || '0');
-      } else {
-        events.push({
-          type: item.TYPE.S || '',
-          data: JSON.parse(item.DATA.S || ''),
-        });
-      }
-    }
-
-    return {
-      name: stream,
-      version,
-      events: async function* () {
-        for (let i = 0; i < events.length; i++) yield events[i];
-      },
-    };
-  }
-
-  public async createTable() {
-    await this.#client.createTable({
-      AttributeDefinitions: [
-        {AttributeName: 'PK', AttributeType: 'S'},
-        {AttributeName: 'SK', AttributeType: 'S'},
-      ],
-      KeySchema: [
-        {AttributeName: 'PK', KeyType: 'HASH'},
-        {AttributeName: 'SK', KeyType: 'RANGE'},
-      ],
-      TableName: this.#table,
-      BillingMode: 'PAY_PER_REQUEST',
-    });
-  }
-}
+import {EventStore, EventStream } from '../src';
 
 const local = () => {
   return new DynamoDB({
@@ -110,26 +12,48 @@ const local = () => {
   });
 };
 
-describe('When writing to a new stream', () => {
-  const streamName = new Date().getMilliseconds().toString();
-  const eventData = {
-    name: 'SparkleHooves',
-    distance: 5,
+const random_stream = () => new Date().getTime().toString();
+
+const given_an_empty_event_store = async () => {
+  const store = new EventStore<PonyJumped>(`table-${random_stream()}`, local());
+  await store.createTable();
+  return store;
+};
+
+const copy = async (g: AsyncGenerator<PonyJumped>) => {
+  const result: Array<PonyJumped> = [];
+  for await (const e of g) {
+    result.push(e);
+  }
+  return result;
+};
+
+interface PonyJumped {
+  type: 'PonyJumped';
+  data: {
+    name: string;
+    distance: number;
   };
-  let stream: EventStream;
+}
+
+const jump = (name: string, distance: number) => ({
+  type: 'PonyJumped' as const,
+  data: {
+    name,
+    distance,
+  },
+});
+
+describe('When writing to a new stream', () => {
+  const streamName = random_stream();
+  const event = jump('SparkleHooves', 5);
+  let stream: EventStream<PonyJumped>;
 
   beforeAll(async () => {
-    const store = new EventStore(`table-${streamName}`, local());
-    await store.createTable();
-
-    await store.write(streamName, {
-      type: 'PonyJumped',
-      data: eventData,
-    });
+    const store = await given_an_empty_event_store();
+    await store.write(streamName, event);
 
     stream = await store.read(streamName);
-
-    console.log(stream);
   });
 
   it('should be at version 1', () => {
@@ -137,23 +61,37 @@ describe('When writing to a new stream', () => {
   });
 
   it('should contain the event', async () => {
-    let count = 0;
     for await (const e of stream.events()) {
-      count++;
-      expect(e.data).toMatchObject(eventData);
+      expect(e.data).toMatchObject(event.data);
       expect(e.type).toBe('PonyJumped');
     }
-
-    expect(count).toEqual(1);
   });
 });
 
-describe('Test for initial Jest setup.', () => {
-  describe('practiceTest', () => {
-    test("Given 'Hello World!', return 'Hello World!'", () => {
-      const received = 'Hello World!';
-      const expected = 'Hello World!';
-      expect(received).toBe(expected);
-    });
+describe('When writing to an existing stream', () => {
+  const streamName = random_stream();
+  let stream: EventStream<PonyJumped>;
+  let events: Array<PonyJumped>;
+
+  beforeAll(async () => {
+    const store = await given_an_empty_event_store();
+    await store.write(streamName, jump('SparkleHooves', 5));
+    await store.write(streamName, jump('DerpyHooves', 5));
+
+    stream = await store.read(streamName);
+    events = await copy(stream.events());
+  });
+
+  it('should be at version 2', () => {
+    expect(stream.version).toEqual(2);
+  });
+
+  it('should contain two events', async () => {
+    expect(events.length).toBe(2);
+  });
+
+  it('should have the correct ordering', () => {
+    expect(events[0].data.name).toBe('SparkleHooves');
+    expect(events[1].data.name).toBe('DerpyHooves');
   });
 });
