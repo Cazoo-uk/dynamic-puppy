@@ -1,4 +1,4 @@
-import {DynamoDB} from '@aws-sdk/client-dynamodb';
+import {DynamoDB, Update} from '@aws-sdk/client-dynamodb';
 import ksuid = require('ksuid');
 
 export interface Event<T = unknown> {
@@ -12,8 +12,17 @@ export interface EventStream<T extends Event = Event> {
   events: () => AsyncGenerator<T>;
 }
 
-const metadataUpdate = (table: string, stream: string) => ({
-  Update: {
+export enum Version {
+  Any = -1,
+  None = -2,
+}
+
+const metadataUpdate = (
+  table: string,
+  stream: string,
+  expectedVersion: Version | number
+) => {
+  const update: Update = {
     TableName: table,
     Key: {
       PK: {S: stream},
@@ -23,15 +32,27 @@ const metadataUpdate = (table: string, stream: string) => ({
     UpdateExpression: 'ADD #version :increment',
     ExpressionAttributeNames: {'#version': 'VERSION'},
     ExpressionAttributeValues: {':increment': {N: '1'}},
-  },
-});
+  };
+
+  if (expectedVersion === Version.None)
+    update.ConditionExpression = 'attribute_not_exists(PK)';
+
+  if (expectedVersion > -1 && update.ExpressionAttributeValues) {
+    update.ConditionExpression = '#version = :expected';
+    update.ExpressionAttributeValues[':expected'] = {
+      N: expectedVersion.toString(),
+    };
+  }
+
+  return {Update: update};
+};
 
 function eventInsert<TEvent extends Event = Event>(
   table: string,
   stream: string,
   event: TEvent
 ) {
-  const id = ksuid.randomSync();
+  const id = ksuid.randomSync().string;
   return {
     Put: {
       TableName: table,
@@ -54,10 +75,14 @@ export class EventStore<TEvent extends Event = Event> {
     this.#table = table;
   }
 
-  public async write(stream: string, event: TEvent) {
+  public async write(
+    stream: string,
+    event: TEvent,
+    expectedVersion: Version | number = Version.Any
+  ) {
     await this.#client.transactWriteItems({
       TransactItems: [
-        metadataUpdate(this.#table, stream),
+        metadataUpdate(this.#table, stream, expectedVersion),
         eventInsert(this.#table, stream, event),
       ],
     });
@@ -71,6 +96,8 @@ export class EventStore<TEvent extends Event = Event> {
       },
       KeyConditionExpression: 'PK = :stream',
     });
+
+    console.log(JSON.stringify(result, null, 2));
 
     let version = 0;
     const events: Array<Event> = [];
