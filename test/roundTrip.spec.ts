@@ -78,8 +78,8 @@ describe('When writing to an existing stream', () => {
 
   beforeAll(async () => {
     const store = await given_an_empty_event_store();
-    await store.write(streamName, jump('SparkleHooves', 5));
-    await store.write(streamName, jump('DerpyHooves', 5));
+    await store.write(streamName, jump('SparkleHooves', 5), Version.None);
+    await store.write(streamName, jump('DerpyHooves', 5), 1);
 
     stream = await store.read(streamName);
     events = await copy(stream.events());
@@ -123,7 +123,6 @@ describe('When using version control on an existing stream', () => {
     await expect(
       store.write(streamName, jump('FutureHooves', 1), 9)
     ).rejects.toThrow();
-
   });
 
   it('should prevent writes expecting a new stream', async () => {
