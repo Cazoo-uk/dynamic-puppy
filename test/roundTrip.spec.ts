@@ -1,6 +1,6 @@
 import {DynamoDB} from '@aws-sdk/client-dynamodb';
 import {EventStore, EventStream, Version} from '../src';
-import ksuid = require('ksuid');
+import { Ulid } from 'id128';
 
 const local = () => {
   return new DynamoDB({
@@ -13,7 +13,7 @@ const local = () => {
   });
 };
 
-const random_stream = () => ksuid.randomSync().string;
+const random_stream = () => Ulid.generate().toCanonical()
 
 const given_an_empty_event_store = async () => {
   const name = random_stream();

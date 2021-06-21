@@ -1,5 +1,5 @@
 import {DynamoDB, Update} from '@aws-sdk/client-dynamodb';
-import ksuid = require('ksuid');
+import { Ulid } from 'id128';
 
 export interface Event<T = unknown> {
   type: string;
@@ -52,7 +52,7 @@ function eventInsert<TEvent extends Event = Event>(
   stream: string,
   event: TEvent
 ) {
-  const id = ksuid.randomSync().string;
+  const id = Ulid.generate().toCanonical()
   return {
     Put: {
       TableName: table,
